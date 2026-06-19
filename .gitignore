@@ -1,0 +1,19 @@
+# Python environments
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Challenge data — 487 MB, exceeds GitHub's 100 MB limit. Downloaded from the bundle,
+# not committed. Reproduce via: python rank.py --candidates ./candidates.jsonl --out ./submission.csv
+candidates.jsonl
+candidates.jsonl.gz
+
+# Generated submission
+submission.csv
+*.submission.csv
