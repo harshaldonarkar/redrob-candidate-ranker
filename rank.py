@@ -22,6 +22,7 @@ import argparse
 import csv
 import gzip
 import json
+import re
 from datetime import date, datetime
 
 TOP_N = 100
@@ -57,6 +58,103 @@ def compute_ref_date(records: list[dict]) -> date:
         if latest is None or d > latest:
             latest = d
     return latest or date(2026, 1, 1)
+
+
+# --------------------------------------------------------------------------
+# Career-history relevance — the JD's decisive, hard-to-game signal
+# --------------------------------------------------------------------------
+# Reads what each role actually DID (title + description) rather than trusting
+# title/skill tags. Distinct IR/recsys/ranking/NLP concepts, scaled by build-vs-
+# mention language and eval rigor, with a span-localized vision guard that tanks
+# only profiles whose every domain hit is hugging a CV/speech word. Per-role
+# scores are recency- and services-weighted, then aggregated with a half-life
+# discount so the single strongest relevant role dominates.
+DOMAIN_CONCEPTS = {
+    "search": re.compile(r"\b(search|retrieval|ir|information retrieval)\b"),
+    "recsys": re.compile(r"\b(recommendation|recsys|recommender)\b"),
+    "ranking": re.compile(r"\b(ranking|learning-to-rank|ltr)\b"),
+    "embedding": re.compile(r"\b(embedding|embeddings|vector search|rag)\b"),
+    "nlp": re.compile(r"\b(nlp)\b"),
+}
+ACTION_RE = re.compile(r"\b(built|designed|architected|shipped|deployed|owned|led|scaled|migrated|rebuilt|trained|implemented)\b")
+SCALE_RE = re.compile(r"\b(production|users|qps|latency|throughput|rolled out|scale|millions|billion)\b")
+MENTION_RE = re.compile(r"\b(familiar with|exposure to|assisted with|learning|interested in|course|courses|tutorial|poc|side project|experimented|playing with)\b")
+EVAL_RE = re.compile(r"\b(ndcg|mrr|mean average precision|a/b test|ab test|offline-online|offline to online)\b")
+VISION_RE = re.compile(r"\b(image|images|visual|vision|cv|object detection|segmentation|ocr|speech|audio|gan|diffusion|computer vision)\b")
+WORD_RE = re.compile(r"\b[\w-]+\b")
+
+SERVICES_FIRMS = {"tcs", "infosys", "wipro", "accenture", "cognizant", "capgemini", "tech mahindra", "mindtree", "hcl"}
+
+
+def get_window_text(text: str, start: int, end: int, window_size: int = 3) -> str:
+    """±window_size words around a character span (for the localized vision guard)."""
+    words_before = WORD_RE.findall(text[:start])
+    words_after = WORD_RE.findall(text[end:])
+    return " ".join(words_before[-window_size:] + words_after[:window_size])
+
+
+def score_career_history(career_history: list[dict], ref_date: date) -> float:
+    """Span-window concept aggregation across roles; higher = more real IR/NLP work."""
+    entry_scores = []
+    for entry in career_history:
+        text = f"{entry.get('title', '')} {entry.get('description', '')}".lower()
+
+        has_domain_hits = False
+        distinct_domain_hits = 0
+        all_hits_vision_qualified = True  # assume pure-CV until a clean IR hit proves otherwise
+        for pattern in DOMAIN_CONCEPTS.values():
+            matches = list(pattern.finditer(text))
+            if matches:
+                has_domain_hits = True
+                distinct_domain_hits += 1
+                for match in matches:
+                    window_text = get_window_text(text, match.start(), match.end(), 3)
+                    if not VISION_RE.search(window_text):
+                        all_hits_vision_qualified = False
+        if not has_domain_hits:
+            continue
+
+        # Trapdoor: if EVERY domain hit hugged a vision/speech word, tank it.
+        cv_penalty = 0.1 if all_hits_vision_qualified else 1.0
+
+        action_hits = len(ACTION_RE.findall(text))
+        scale_hits = len(SCALE_RE.findall(text))
+        mention_hits = len(MENTION_RE.findall(text))
+        eval_hits = len(EVAL_RE.findall(text))
+
+        if action_hits > 0 and scale_hits > 0:
+            base_multiplier = 3.0
+        elif action_hits > 0:
+            base_multiplier = 1.5
+        else:
+            base_multiplier = 0.5
+        if mention_hits > 0:
+            base_multiplier *= max(0.1, 1.0 - (0.4 * mention_hits))
+        eval_bonus = eval_hits * 2.0
+
+        company = str(entry.get("company", "")).lower()
+        industry = str(entry.get("industry", "")).lower()
+        is_services = industry == "it services" or any(f in company for f in SERVICES_FIRMS)
+        company_weight = 0.3 if is_services else 1.0
+
+        end_date_str = entry.get("end_date")
+        try:
+            end_d = date.fromisoformat(end_date_str[:10]) if end_date_str else ref_date
+        except (ValueError, TypeError):
+            end_d = ref_date
+        duration_yrs = max(entry.get("duration_months", 0) / 12.0, 0.1)
+        years_ago = max((ref_date - end_d).days / 365.25, 0)
+        recency_decay = max(0.6, 0.8 ** years_ago)
+
+        time_weight = duration_yrs * recency_decay
+        base_score = distinct_domain_hits * base_multiplier * cv_penalty
+        job_score = (base_score * company_weight * time_weight) + (eval_bonus * company_weight * recency_decay * cv_penalty)
+        entry_scores.append(job_score)
+
+    if not entry_scores:
+        return 0.0
+    entry_scores.sort(reverse=True)
+    return sum(score / (2 ** i) for i, score in enumerate(entry_scores))
 
 
 # --------------------------------------------------------------------------
@@ -98,11 +196,10 @@ def score_candidate(c: dict, ref_date: date) -> float:
 
     Keep it deterministic and cheap (no per-candidate model calls).
     """
-    # ---- THROWAWAY PLACEHOLDER: proximity to the 7-yr midpoint of the band. ----
-    # Produces varied output so the pipeline/sort/CSV are exercised on real
-    # variation. Delete this and implement the model above.
-    yoe = (c.get("profile") or {}).get("years_of_experience") or 0
-    return -abs(yoe - 7.0)
+    # Driven by career-history relevance (component 2 above). Role tier, AI depth,
+    # experience band, product-vs-services, and behavioral tiebreakers layer on next.
+    career_history = c.get("career_history") or []
+    return score_career_history(career_history, ref_date)
 
 
 # --------------------------------------------------------------------------
