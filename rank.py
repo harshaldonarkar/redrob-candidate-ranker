@@ -158,6 +158,47 @@ def score_career_history(career_history: list[dict], ref_date: date) -> float:
 
 
 # --------------------------------------------------------------------------
+# Blend architecture: additive positives, multiplicative hard-negative gates
+# --------------------------------------------------------------------------
+# Positive signals are normalized to [0,1] and blended with explicit weights
+# (transparent + tunable, career highest but not dominant-by-construction).
+# Hard negatives apply as a MULTIPLICATIVE gate so they can't be averaged away
+# by strong positives.
+CAREER_K = 13.0  # saturating constant ~ the "clearly relevant" single-builder threshold
+
+# Weights are set once with intent and sum to 1. role/ai/behavioral terms are
+# reserved here and contribute 0 until their signals are built (next commits).
+WEIGHTS = {"career": 0.40, "role": 0.22, "ai": 0.16, "exp": 0.14, "behavioral": 0.08}
+
+
+def normalize_career(raw: float, k: float = CAREER_K) -> float:
+    """Saturating transform career/(career+k): 0->0, 16->0.55, 26->0.67, 40->0.76.
+    Compresses the long tail of star builders while keeping spread in the 0-26 band
+    where most ranking decisions sit. Chosen over min-max, which collapses the
+    heavily-skewed middle to ~0."""
+    return raw / (raw + k) if raw > 0 else 0.0
+
+
+def exp_band(yoe) -> float:
+    """Soft preference: flat 1.0 across the JD's 5-9 years, gentle falloff outside.
+    Not a hard cut — strong core signals can still carry someone beyond the band."""
+    if not isinstance(yoe, (int, float)):
+        return 0.5
+    if 5 <= yoe <= 9:
+        return 1.0
+    if yoe < 5:
+        return max(0.0, 1.0 - (5 - yoe) * 0.18)   # 3.1y -> 0.66
+    return max(0.0, 1.0 - (yoe - 9) * 0.12)        # 13y  -> 0.52
+
+
+def hard_negative_multiplier(c: dict, ref_date: date) -> float:
+    """Multiplicative gate for HARD NEGATIVES (whole-career services-only, keyword
+    stuffer, CV/speech-primary, pure-research-only). Each detector multiplies in a
+    factor < 1. Returns 1.0 (no gate) until those detectors are built. TODO."""
+    return 1.0
+
+
+# --------------------------------------------------------------------------
 # Scoring  <-- THIS is the part you build. Everything below is plumbing.
 # --------------------------------------------------------------------------
 def score_candidate(c: dict, ref_date: date) -> float:
@@ -196,10 +237,18 @@ def score_candidate(c: dict, ref_date: date) -> float:
 
     Keep it deterministic and cheap (no per-candidate model calls).
     """
-    # Driven by career-history relevance (component 2 above). Role tier, AI depth,
-    # experience band, product-vs-services, and behavioral tiebreakers layer on next.
-    career_history = c.get("career_history") or []
-    return score_career_history(career_history, ref_date)
+    profile = c.get("profile") or {}
+
+    career_raw = score_career_history(c.get("career_history") or [], ref_date)
+    career_norm = normalize_career(career_raw)
+    exp = exp_band(profile.get("years_of_experience"))
+
+    # Additive positive blend. role/ai/behavioral terms join here as built.
+    positive = WEIGHTS["career"] * career_norm + WEIGHTS["exp"] * exp
+    # + WEIGHTS["role"] * role_tier_score(...) + WEIGHTS["ai"] * ai_depth_norm(...)
+    # + WEIGHTS["behavioral"] * behavioral_score(...)
+
+    return positive * hard_negative_multiplier(c, ref_date)
 
 
 # --------------------------------------------------------------------------
