@@ -229,6 +229,22 @@ def normalize_ai(depth: float, k: float = AI_DEPTH_K) -> float:
     return depth / (depth + k) if depth > 0 else 0.0
 
 
+def behavioral_score(c: dict, ref_date: date) -> float:
+    """Weak availability tiebreaker in [0,1]: recency + recruiter response + open-to-work.
+    -1 / missing sentinels map to NEUTRAL (pool median), never to 0."""
+    s = c.get("redrob_signals") or {}
+    la = s.get("last_active_date")
+    try:
+        days = (ref_date - date.fromisoformat(la[:10])).days if la else 365
+    except (ValueError, TypeError):
+        days = 365
+    recency = max(0.0, 1.0 - days / 365.0)
+    rr = s.get("recruiter_response_rate")
+    rr = rr if isinstance(rr, (int, float)) and rr >= 0 else 0.44  # neutral default
+    otw = 1.0 if s.get("open_to_work_flag") else 0.0
+    return 0.5 * recency + 0.3 * rr + 0.2 * otw
+
+
 # Role-relevance tier from current_title. Not a tech/non-tech binary: an NLP/IR
 # role makes Frontend/QA/Cloud/Mobile engineers off-target, and CV/speech/robotics
 # titles off-target too (JD explicitly does not want those without NLP/IR).
@@ -338,14 +354,14 @@ def score_candidate(c: dict, ref_date: date) -> float:
     ai_norm = normalize_ai(ai_depth)
     exp = exp_band(profile.get("years_of_experience"))
 
-    # Additive positive blend. behavioral term joins here as built.
+    # Additive positive blend (all five signals live).
     positive = (
         WEIGHTS["career"] * career_norm
         + WEIGHTS["role"] * role_tier_score(c)
         + WEIGHTS["ai"] * ai_norm
         + WEIGHTS["exp"] * exp
+        + WEIGHTS["behavioral"] * behavioral_score(c, ref_date)
     )
-    # + WEIGHTS["behavioral"] * behavioral_score(...)
 
     return positive * hard_negative_multiplier(c, career_raw, ai_hits, trusted_ai)
 
@@ -354,12 +370,54 @@ def score_candidate(c: dict, ref_date: date) -> float:
 # Honeypot gate  (paste your notebook's honeypot_reasons here)
 # --------------------------------------------------------------------------
 def honeypot_reasons(c: dict, ref_date: date) -> list[str]:
-    """
-    Return reasons a profile is impossible; empty list = passes the gate.
-    Drop in the version from your notebook (Section 6). Stubbed to pass-through
-    so the baseline runs; wire the real one in as its own commit.
-    """
-    return []
+    """High-precision impossibility checks (notebook §6). Empty list = passes the
+    gate. These are 'this cannot be true', not weak-candidate signals."""
+    reasons = []
+    p = c.get("profile") or {}
+    hist = c.get("career_history") or []
+    skills = c.get("skills") or []
+    edu = c.get("education") or []
+    yoe = p.get("years_of_experience") or 0
+    total_months = sum((h.get("duration_months") or 0) for h in hist)
+    max_tenure = max((h.get("duration_months") or 0) for h in hist) if hist else 0
+
+    if yoe - total_months / 12.0 > 3:
+        reasons.append("yoe_exceeds_summed_history")
+    if yoe and max_tenure / 12.0 > yoe + 1:
+        reasons.append("single_tenure_exceeds_yoe")
+
+    starts = []
+    for h in hist:
+        sd, ed = h.get("start_date"), h.get("end_date")
+        try:
+            d0 = date.fromisoformat(sd[:10]) if sd else None
+            d1 = date.fromisoformat(ed[:10]) if ed else None
+        except (ValueError, TypeError):
+            d0 = d1 = None
+        if d0:
+            starts.append(d0)
+            if d0 > ref_date:
+                reasons.append("job_starts_in_future")
+        if d0 and d1:
+            if d1 < d0:
+                reasons.append("job_end_before_start")
+            if abs((d1 - d0).days / 30.44 - (h.get("duration_months") or 0)) > 24:
+                reasons.append("duration_contradicts_dates")
+    if starts and yoe - (ref_date - min(starts)).days / 365.25 > 4:
+        reasons.append("yoe_predates_first_job")
+
+    expert_zero = sum(1 for s in skills if s.get("proficiency") == "expert" and (s.get("duration_months") or 0) == 0)
+    if expert_zero >= 3:
+        reasons.append("expert_skills_zero_duration")
+
+    for e in edu:
+        sy, ey = e.get("start_year"), e.get("end_year")
+        if sy and ey and ey < sy:
+            reasons.append("education_end_before_start")
+        if ey and ey > ref_date.year + 1:
+            reasons.append("education_graduates_in_future")
+
+    return sorted(set(reasons))
 
 
 # --------------------------------------------------------------------------
