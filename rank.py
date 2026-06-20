@@ -191,6 +191,39 @@ def exp_band(yoe) -> float:
     return max(0.0, 1.0 - (yoe - 9) * 0.12)        # 13y  -> 0.52
 
 
+# Role-relevance tier from current_title. Not a tech/non-tech binary: an NLP/IR
+# role makes Frontend/QA/Cloud/Mobile engineers off-target, and CV/speech/robotics
+# titles off-target too (JD explicitly does not want those without NLP/IR).
+OFFTARGET_PRIMARY = re.compile(r"\b(computer vision|cv engineer|vision engineer|speech|robotics|\bimage\b)\b", re.I)
+CORE_TITLE = re.compile(
+    r"\b(ai engineer|ml engineer|machine learning|applied scientist|applied ml|"
+    r"research (scientist|engineer)|ai research|recommendation|recommender|recsys|"
+    r"search engineer|information retrieval|nlp|ranking engineer|relevance engineer)\b",
+    re.I,
+)
+ADJACENT_TITLE = re.compile(
+    r"\b(data scientist|data engineer|analytics engineer|data analyst|"
+    r"software engineer|backend engineer|full[- ]?stack|platform engineer)\b",
+    re.I,
+)
+ROLE_TIER_SCORE = {"core": 1.0, "adjacent": 0.55, "off_target": 0.10}
+
+
+def role_tier(title: str | None) -> str:
+    title = title or ""
+    if OFFTARGET_PRIMARY.search(title):   # CV/speech/robotics-primary -> off-target
+        return "off_target"
+    if CORE_TITLE.search(title):
+        return "core"
+    if ADJACENT_TITLE.search(title):
+        return "adjacent"
+    return "off_target"
+
+
+def role_tier_score(c: dict) -> float:
+    return ROLE_TIER_SCORE[role_tier((c.get("profile") or {}).get("current_title"))]
+
+
 def hard_negative_multiplier(c: dict, ref_date: date) -> float:
     """Multiplicative gate for HARD NEGATIVES (whole-career services-only, keyword
     stuffer, CV/speech-primary, pure-research-only). Each detector multiplies in a
@@ -243,10 +276,13 @@ def score_candidate(c: dict, ref_date: date) -> float:
     career_norm = normalize_career(career_raw)
     exp = exp_band(profile.get("years_of_experience"))
 
-    # Additive positive blend. role/ai/behavioral terms join here as built.
-    positive = WEIGHTS["career"] * career_norm + WEIGHTS["exp"] * exp
-    # + WEIGHTS["role"] * role_tier_score(...) + WEIGHTS["ai"] * ai_depth_norm(...)
-    # + WEIGHTS["behavioral"] * behavioral_score(...)
+    # Additive positive blend. ai/behavioral terms join here as built.
+    positive = (
+        WEIGHTS["career"] * career_norm
+        + WEIGHTS["role"] * role_tier_score(c)
+        + WEIGHTS["exp"] * exp
+    )
+    # + WEIGHTS["ai"] * ai_depth_norm(...) + WEIGHTS["behavioral"] * behavioral_score(...)
 
     return positive * hard_negative_multiplier(c, ref_date)
 
