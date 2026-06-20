@@ -423,15 +423,72 @@ def honeypot_reasons(c: dict, ref_date: date) -> list[str]:
 # --------------------------------------------------------------------------
 # Reasoning  (Stage 4 grades this by hand; build from real matched features)
 # --------------------------------------------------------------------------
+def _top_trusted_skills(c: dict, n: int = 3) -> list[str]:
+    skills = c.get("skills") or []
+    trusted = [
+        s for s in skills
+        if is_ai_skill(s.get("name")) and (s.get("duration_months") or 0) >= 6 and (s.get("endorsements") or 0) >= 1
+    ]
+    trusted.sort(key=lambda s: s.get("endorsements") or 0, reverse=True)
+    return [s.get("name") for s in trusted[:n]]
+
+
+def _best_career_line(c: dict) -> str:
+    """The single most domain-relevant role description (for evidence in the reasoning)."""
+    best_line, best_hits = "", 0
+    for h in c.get("career_history") or []:
+        text = f"{h.get('title', '')} {h.get('description', '')}".lower()
+        hits = sum(1 for pat in DOMAIN_CONCEPTS.values() if pat.search(text))
+        if hits > best_hits:
+            best_hits, best_line = hits, (h.get("description") or "").strip()
+    return best_line
+
+
 def build_reasoning(c: dict, ref_date: date) -> str:
-    """
-    One line of concrete, per-candidate evidence. Replace the placeholder with
-    the actual signals that drove the score (role tier, yrs, the endorsed+used
-    AI skills, the relevant career line, recency). Avoid an identical template
-    across rows. NOTE: commas/newlines are fine here — the CSV writer quotes them.
-    """
+    """Per-candidate, deterministic, no LLM. Every claim is grounded in the record;
+    conditional concern clauses keep the 100 rows substantively different and
+    rank-consistent for the Stage-4 checks."""
     p = c.get("profile") or {}
-    return f"placeholder: {p.get('current_title', '?')}, {p.get('years_of_experience', '?')} yrs"
+    title = p.get("current_title") or "Unknown role"
+    yoe = p.get("years_of_experience")
+    yoe_s = f"{yoe:.1f}y" if isinstance(yoe, (int, float)) else "n/a exp"
+    tier_phrase = {"core": "core-fit", "adjacent": "adjacent", "off_target": "off-target"}[role_tier(title)]
+    parts = [f"{title} ({yoe_s}), {tier_phrase} title."]
+
+    line = _best_career_line(c)
+    if line:
+        line = " ".join(line.split())
+        if len(line) > 120:
+            line = line[:117].rstrip() + "..."
+        parts.append(f'Relevant experience: "{line}"')
+
+    skills = _top_trusted_skills(c)
+    if skills:
+        parts.append(f"Endorsed+used AI skills: {', '.join(skills)}.")
+
+    concerns = []
+    hist = c.get("career_history") or []
+    if hist:
+        svc = sum(
+            1 for h in hist
+            if (h.get("industry") or "").lower() == "it services"
+            or any(f in (h.get("company") or "").lower() for f in SERVICES_FIRMS)
+        )
+        if svc / len(hist) >= 0.5:
+            concerns.append("services-heavy background")
+    if isinstance(yoe, (int, float)) and not (5 <= yoe <= 9):
+        concerns.append(f"{yoe:.1f}y outside the 5-9 band")
+    la = (c.get("redrob_signals") or {}).get("last_active_date")
+    try:
+        days = (ref_date - date.fromisoformat(la[:10])).days if la else None
+    except (ValueError, TypeError):
+        days = None
+    if days and days > 120:
+        concerns.append(f"inactive {days}d")
+    if concerns:
+        parts.append("Concerns: " + "; ".join(concerns) + ".")
+
+    return " ".join(parts)
 
 
 # --------------------------------------------------------------------------
