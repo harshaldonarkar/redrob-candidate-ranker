@@ -191,6 +191,44 @@ def exp_band(yoe) -> float:
     return max(0.0, 1.0 - (yoe - 9) * 0.12)        # 13y  -> 0.52
 
 
+# AI skill depth — corroborated (endorsed AND used) and saturating-normalized.
+# This is the gameable axis (the skill-stuffing the JD planted traps around), so it
+# is down-weighted vs career and fed the trusted (not raw) version.
+AI_KEYWORDS = (
+    "machine learning", "deep learning", "nlp", "natural language", "embeddings",
+    "retrieval", "rag", "vector search", "vector database", "information retrieval",
+    "ranking", "recommender", "recommendation", "transformers", "llm", "fine-tuning",
+    "lora", "pytorch", "tensorflow", "sentence-transformers", "faiss", "pinecone",
+    "weaviate", "qdrant", "milvus", "elasticsearch", "opensearch", "bm25",
+    "learning to rank", "xgboost", "semantic search", "bert", "gpt",
+)
+PROF_W = {"beginner": 0.25, "intermediate": 0.5, "advanced": 0.8, "expert": 1.0}
+AI_DEPTH_K = 7.0  # half-saturation at the ~p95 "genuinely deep" knee of the real distribution
+
+
+def is_ai_skill(name) -> bool:
+    n = (name or "").lower()
+    return any(kw in n for kw in AI_KEYWORDS)
+
+
+def ai_features(c: dict) -> tuple[int, int, float]:
+    """Return (ai_hits, trusted_ai, trusted_depth). Depth is weighted over skills
+    that are BOTH endorsed (>=1) and used (>=6 months), by proficiency x years (capped)."""
+    skills = c.get("skills") or []
+    ai = [s for s in skills if is_ai_skill(s.get("name"))]
+    trusted = [s for s in ai if (s.get("duration_months") or 0) >= 6 and (s.get("endorsements") or 0) >= 1]
+    depth = sum(
+        PROF_W.get(s.get("proficiency"), 0) * min((s.get("duration_months") or 0) / 12.0, 5.0)
+        for s in trusted
+    )
+    return len(ai), len(trusted), depth
+
+
+def normalize_ai(depth: float, k: float = AI_DEPTH_K) -> float:
+    """Saturating, same family as career but K=7 read off ai_depth's own knee."""
+    return depth / (depth + k) if depth > 0 else 0.0
+
+
 # Role-relevance tier from current_title. Not a tech/non-tech binary: an NLP/IR
 # role makes Frontend/QA/Cloud/Mobile engineers off-target, and CV/speech/robotics
 # titles off-target too (JD explicitly does not want those without NLP/IR).
@@ -224,11 +262,33 @@ def role_tier_score(c: dict) -> float:
     return ROLE_TIER_SCORE[role_tier((c.get("profile") or {}).get("current_title"))]
 
 
-def hard_negative_multiplier(c: dict, ref_date: date) -> float:
-    """Multiplicative gate for HARD NEGATIVES (whole-career services-only, keyword
-    stuffer, CV/speech-primary, pure-research-only). Each detector multiplies in a
-    factor < 1. Returns 1.0 (no gate) until those detectors are built. TODO."""
-    return 1.0
+# Broad "any technical title" test (engineer/dev/scientist/...). A keyword stuffer
+# is someone whose title is NOT even broadly technical (Marketing/Sales/HR/Accountant)
+# yet whose skills are AI-dense — distinct from a real engineer in the wrong specialty.
+BROAD_TECH = re.compile(
+    r"engineer|scientist|\bml\b|machine learning|\bai\b|data scien|applied scien|"
+    r"research|developer|architect|\bnlp\b",
+    re.I,
+)
+STUFFER_GATE = 0.05  # confirmed-precise detector -> bury, but floor (not 0) as insurance
+
+
+def is_stuffer(c: dict, career_raw: float, ai_hits: int, trusted_ai: int) -> bool:
+    """Non-technical title + dense AI keywords + ~no corroborated depth + no career
+    build evidence. The JD: skills don't redeem a Marketing Manager 'no matter how
+    perfect their skill list looks.' High precision on inspection (22 hits, all clean)."""
+    title = (c.get("profile") or {}).get("current_title") or ""
+    non_technical = not BROAD_TECH.search(title)
+    return non_technical and ai_hits >= 5 and trusted_ai <= 1 and career_raw < 2.0
+
+
+def hard_negative_multiplier(c: dict, career_raw: float, ai_hits: int, trusted_ai: int) -> float:
+    """Multiplicative gate for HARD NEGATIVES. Stuffer gate live; whole-career
+    services-only / CV-primary / pure-research-only gates can layer in here next."""
+    m = 1.0
+    if is_stuffer(c, career_raw, ai_hits, trusted_ai):
+        m *= STUFFER_GATE
+    return m
 
 
 # --------------------------------------------------------------------------
@@ -274,17 +334,20 @@ def score_candidate(c: dict, ref_date: date) -> float:
 
     career_raw = score_career_history(c.get("career_history") or [], ref_date)
     career_norm = normalize_career(career_raw)
+    ai_hits, trusted_ai, ai_depth = ai_features(c)
+    ai_norm = normalize_ai(ai_depth)
     exp = exp_band(profile.get("years_of_experience"))
 
-    # Additive positive blend. ai/behavioral terms join here as built.
+    # Additive positive blend. behavioral term joins here as built.
     positive = (
         WEIGHTS["career"] * career_norm
         + WEIGHTS["role"] * role_tier_score(c)
+        + WEIGHTS["ai"] * ai_norm
         + WEIGHTS["exp"] * exp
     )
-    # + WEIGHTS["ai"] * ai_depth_norm(...) + WEIGHTS["behavioral"] * behavioral_score(...)
+    # + WEIGHTS["behavioral"] * behavioral_score(...)
 
-    return positive * hard_negative_multiplier(c, ref_date)
+    return positive * hard_negative_multiplier(c, career_raw, ai_hits, trusted_ai)
 
 
 # --------------------------------------------------------------------------
