@@ -166,8 +166,9 @@ def score_career_history(career_history: list[dict], ref_date: date) -> float:
 # by strong positives.
 CAREER_K = 13.0  # saturating constant ~ the "clearly relevant" single-builder threshold
 
-# Weights are set once with intent and sum to 1. role/ai/behavioral terms are
-# reserved here and contribute 0 until their signals are built (next commits).
+# Weights are set once with intent and sum to 1. All five positive signals are
+# fully wired into `positive` in score_candidate; hard negatives apply separately
+# as a multiplicative gate (see hard_negative_multiplier).
 WEIGHTS = {"career": 0.40, "role": 0.22, "ai": 0.16, "exp": 0.14, "behavioral": 0.08}
 
 
@@ -286,7 +287,23 @@ BROAD_TECH = re.compile(
     r"research|developer|architect|\bnlp\b",
     re.I,
 )
-STUFFER_GATE = 0.05  # confirmed-precise detector -> bury, but floor (not 0) as insurance
+STUFFER_GATE = 0.05    # confirmed-precise detector -> bury, but floor (not 0) as insurance
+SERVICES_GATE = 0.10   # JD hard-no, but coarser/high-volume detector -> slightly higher floor
+CV_PRIMARY_GATE = 0.05 # precise (no IR/NLP anywhere) -> bury like the stuffer
+
+# CV/speech/robotics surface terms, and any IR/NLP evidence. Used together: a
+# CV-primary candidate is one with vision/speech words and NO retrieval/NLP signal
+# anywhere in their history — the JD downweights "CV/speech/robotics without
+# significant NLP/IR exposure", not anyone who has ever touched an image.
+CV_PRIMARY_RE = re.compile(
+    r"computer vision|\bcv\b|\bvision\b|speech|robotics|object detection|segmentation|\bocr\b|\bimage\b",
+    re.I,
+)
+IR_ANY_RE = re.compile(
+    r"search|retrieval|recommend|recsys|ranking|learning-to-rank|embedding|vector|"
+    r"\bnlp\b|\brag\b|semantic|information retrieval",
+    re.I,
+)
 
 
 def is_stuffer(c: dict, career_raw: float, ai_hits: int, trusted_ai: int) -> bool:
@@ -298,12 +315,48 @@ def is_stuffer(c: dict, career_raw: float, ai_hits: int, trusted_ai: int) -> boo
     return non_technical and ai_hits >= 5 and trusted_ai <= 1 and career_raw < 2.0
 
 
+def is_services_only(c: dict) -> bool:
+    """EVERY role is a services firm or 'IT Services' industry. JD: consulting-only
+    careers are 'not a fit' regardless of skills — but 'prior product-company
+    experience is fine', so requiring ALL entries to be services is the conservative
+    reading (any single product stint exempts the candidate). ~9.7% of the pool."""
+    hist = c.get("career_history") or []
+    if not hist:
+        return False
+    for h in hist:
+        company = (h.get("company") or "").lower()
+        industry = (h.get("industry") or "").lower()
+        if not (industry == "it services" or any(f in company for f in SERVICES_FIRMS)):
+            return False
+    return True
+
+
+def is_cv_primary(c: dict) -> bool:
+    """CV/speech/robotics terms present (title or any description) AND no IR/NLP
+    evidence anywhere in the career history. The 'no IR anywhere' clause keeps this
+    precise (~54 hits): a genuine IR person who also did some vision is NOT caught."""
+    title = (c.get("profile") or {}).get("current_title") or ""
+    blob = " ".join(
+        f"{h.get('title', '')} {h.get('description', '')}"
+        for h in (c.get("career_history") or [])
+    )
+    has_cv = bool(CV_PRIMARY_RE.search(title) or CV_PRIMARY_RE.search(blob))
+    has_ir = bool(IR_ANY_RE.search(blob))
+    return has_cv and not has_ir
+
+
 def hard_negative_multiplier(c: dict, career_raw: float, ai_hits: int, trusted_ai: int) -> float:
-    """Multiplicative gate for HARD NEGATIVES. Stuffer gate live; whole-career
-    services-only / CV-primary / pure-research-only gates can layer in here next."""
+    """Multiplicative gate for HARD NEGATIVES — applied OUTSIDE the additive blend so
+    they can't be averaged away by strong positives. Gates stack multiplicatively.
+    Live: keyword-stuffer, whole-career services-only, CV/speech-primary-with-no-IR.
+    Not yet built: pure-research-only, recent-LLM-only."""
     m = 1.0
     if is_stuffer(c, career_raw, ai_hits, trusted_ai):
         m *= STUFFER_GATE
+    if is_services_only(c):
+        m *= SERVICES_GATE
+    if is_cv_primary(c):
+        m *= CV_PRIMARY_GATE
     return m
 
 
@@ -316,13 +369,12 @@ def score_candidate(c: dict, ref_date: date) -> float:
 
     Build this out per the JD model. Suggested structure, in rough weight order:
 
-      1. HARD NEGATIVES (floor the score):
-         - services-only career (TCS/Infosys/Wipro/Accenture/Cognizant/
-           Capgemini) across the WHOLE career_history, not just current_company
-         - non-technical current_title + dense AI skills (your is_stuffer)
-         - CV/speech/robotics primary with no NLP/IR
-         - pure-research-only, no production
-         - recent-LLM-only (<12mo LangChain/OpenAI) with no pre-LLM ML
+      1. HARD NEGATIVES — multiplicative gate in hard_negative_multiplier():
+         [GATED] non-technical current_title + dense AI skills (is_stuffer, x0.05)
+         [GATED] services-only career across the WHOLE career_history (x0.10)
+         [GATED] CV/speech/robotics primary with no NLP/IR anywhere (x0.05)
+         [TODO]  pure-research-only, no production
+         [TODO]  recent-LLM-only (<12mo LangChain/OpenAI) with no pre-LLM ML
 
       2. CORE FIT (heaviest positive weight):
          - retrieval / vector-search / ranking evidence IN career_history
