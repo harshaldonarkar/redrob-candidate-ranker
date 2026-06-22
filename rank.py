@@ -290,6 +290,17 @@ BROAD_TECH = re.compile(
 STUFFER_GATE = 0.05    # confirmed-precise detector -> bury, but floor (not 0) as insurance
 SERVICES_GATE = 0.10   # JD hard-no, but coarser/high-volume detector -> slightly higher floor
 CV_PRIMARY_GATE = 0.05 # precise (no IR/NLP anywhere) -> bury like the stuffer
+RECENT_LLM_GATE = 0.25 # JD hedges ("probably not, unless pre-LLM ML") -> softer penalty
+
+# recent-LLM-only: AI experience is only recent LangChain/OpenAI-style work with no
+# pre-LLM ML foundation. LLM-era skill tags vs classic-ML skill tags.
+LLM_SKILL_RE = re.compile(r"langchain|openai|\bllm\b|llms|\bgpt\b|prompt eng|\brag\b|llamaindex", re.I)
+CLASSIC_ML_RE = re.compile(
+    r"pytorch|tensorflow|scikit|xgboost|regression|random forest|\bsvm\b|clustering|"
+    r"recommender|recommendation|ranking|embedding|\bnlp\b|computer vision|"
+    r"machine learning|deep learning|information retrieval|learning to rank",
+    re.I,
+)
 
 # CV/speech/robotics surface terms, and any IR/NLP evidence. Used together: a
 # CV-primary candidate is one with vision/speech words and NO retrieval/NLP signal
@@ -345,11 +356,33 @@ def is_cv_primary(c: dict) -> bool:
     return has_cv and not has_ir
 
 
+def is_recent_llm_only(c: dict) -> bool:
+    """Technical title whose AI skills are ONLY recent (<12mo) LLM-era tags, with no
+    classic-ML skill at all. JD: '<12mo LangChain/OpenAI ... unless substantial
+    pre-LLM ML' -> the absence of any classic-ML skill is that 'unless' check.
+    Non-technical titles are excluded (those are stuffer territory)."""
+    title = (c.get("profile") or {}).get("current_title") or ""
+    if not BROAD_TECH.search(title):
+        return False
+    skills = c.get("skills") or []
+    llm = [s for s in skills if LLM_SKILL_RE.search(s.get("name") or "")]
+    if not llm:
+        return False
+    has_classic = any(
+        CLASSIC_ML_RE.search(s.get("name") or "") and not LLM_SKILL_RE.search(s.get("name") or "")
+        for s in skills
+    )
+    all_llm_short = all((s.get("duration_months") or 0) < 12 for s in llm)
+    return all_llm_short and not has_classic
+
+
 def hard_negative_multiplier(c: dict, career_raw: float, ai_hits: int, trusted_ai: int) -> float:
     """Multiplicative gate for HARD NEGATIVES — applied OUTSIDE the additive blend so
     they can't be averaged away by strong positives. Gates stack multiplicatively.
-    Live: keyword-stuffer, whole-career services-only, CV/speech-primary-with-no-IR.
-    Not yet built: pure-research-only, recent-LLM-only."""
+    Live: keyword-stuffer, whole-career services-only, CV/speech-primary-with-no-IR,
+    recent-LLM-only. Omitted: pure-research-only — after tightening to academic-lab
+    markers (vs the loose version that false-positived product 'Research Engineers'),
+    it matched 0 candidates; this job-platform pool has no academic-only population."""
     m = 1.0
     if is_stuffer(c, career_raw, ai_hits, trusted_ai):
         m *= STUFFER_GATE
@@ -357,6 +390,8 @@ def hard_negative_multiplier(c: dict, career_raw: float, ai_hits: int, trusted_a
         m *= SERVICES_GATE
     if is_cv_primary(c):
         m *= CV_PRIMARY_GATE
+    if is_recent_llm_only(c):
+        m *= RECENT_LLM_GATE
     return m
 
 
@@ -370,11 +405,12 @@ def score_candidate(c: dict, ref_date: date) -> float:
     Build this out per the JD model. Suggested structure, in rough weight order:
 
       1. HARD NEGATIVES — multiplicative gate in hard_negative_multiplier():
-         [GATED] non-technical current_title + dense AI skills (is_stuffer, x0.05)
-         [GATED] services-only career across the WHOLE career_history (x0.10)
-         [GATED] CV/speech/robotics primary with no NLP/IR anywhere (x0.05)
-         [TODO]  pure-research-only, no production
-         [TODO]  recent-LLM-only (<12mo LangChain/OpenAI) with no pre-LLM ML
+         [GATED]   non-technical current_title + dense AI skills (is_stuffer, x0.05)
+         [GATED]   services-only career across the WHOLE career_history (x0.10)
+         [GATED]   CV/speech/robotics primary with no NLP/IR anywhere (x0.05)
+         [GATED]   recent-LLM-only (<12mo LLM tags, no classic ML) (x0.25, JD hedges)
+         [OMITTED] pure-research-only: 0 candidates in this pool once tightened to
+                   academic-lab markers; loose version false-positived product roles
 
       2. CORE FIT (heaviest positive weight):
          - retrieval / vector-search / ranking evidence IN career_history
