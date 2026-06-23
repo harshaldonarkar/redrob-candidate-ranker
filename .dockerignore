@@ -1,0 +1,20 @@
+# Keep the build context tiny: only rank.py + validate_submission.py are COPYed.
+# Never ship the 487 MB pool, the venv, the notebook, or git history into the image.
+candidates.jsonl
+candidates.jsonl.gz
+sample.jsonl
+submission.csv
+*.csv
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+candidate.ipynb
+*.docx
+*.json
+*.yaml
+*.yml
+*.md
+requirements*.txt

@@ -21,6 +21,36 @@ Output is **deterministic** — the same input produces a byte-identical CSV.
 > **Data note:** `candidates.jsonl` is not committed (it exceeds GitHub's 100 MB limit).
 > Drop the released file into the repo root before running.
 
+## Sandbox: self-contained Docker recipe
+
+Satisfies the spec's §10.5 sandbox requirement without a hosted account. The image is
+just Python + the scripts (the ranker has no third-party dependencies); it **builds and
+runs unmodified**.
+
+```bash
+# 1. Build
+docker build -t redrob-ranker .
+
+# 2. Quick <=100-row sample run (the spec's sandbox check). Make a sample without
+#    committing any data, mount the current dir, rank it:
+head -100 candidates.jsonl > sample.jsonl
+docker run --rm -v "$PWD:/data" redrob-ranker \
+    --candidates /data/sample.jsonl --out /data/submission.csv
+
+# 3. Full 100K pool (same image)
+docker run --rm -v "$PWD:/data" redrob-ranker \
+    --candidates /data/candidates.jsonl --out /data/submission.csv
+
+# 4. Validate the output (same image, different entrypoint).
+#    NOTE: validate_submission.py requires exactly 100 rows, so validate the FULL
+#    run (step 3). A <=100-row sample legitimately yields fewer than 100 ranked rows.
+docker run --rm -v "$PWD:/data" --entrypoint python redrob-ranker \
+    validate_submission.py /data/submission.csv
+```
+
+The mounted `/data` directory must contain the input JSONL; the ranked CSV is written
+back to it. Runs CPU-only, no network, well within the 5 min / 16 GB budget.
+
 ## Approach (unsupervised, hand-encoded)
 
 There are no relevance labels in the data — the ground-truth tiers sit with the graders.

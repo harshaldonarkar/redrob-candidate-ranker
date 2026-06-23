@@ -597,9 +597,13 @@ def rank(records: list[dict], ref_date: date) -> list[dict]:
     # Gate the top (100 + buffer), drop honeypots, keep 100.
     pool = scored[: TOP_N + GATE_BUFFER]
     clean = [(s, cid, c) for (s, cid, c) in pool if not honeypot_reasons(c, ref_date)]
-    final = clean[:TOP_N]
+    final = clean[: min(TOP_N, len(clean))]
 
-    if len(final) < TOP_N:
+    # Only a problem if the pool was large enough to expect a full TOP_N but the gates
+    # ate too far into the buffer (real bug -> raise GATE_BUFFER). A small input pool
+    # (e.g. the <=100-candidate sandbox sample) legitimately yields fewer than TOP_N
+    # rows; rank what's available rather than crash.
+    if len(scored) >= TOP_N + GATE_BUFFER and len(final) < TOP_N:
         raise SystemExit(
             f"Only {len(final)} clean candidates in top {TOP_N + GATE_BUFFER}; "
             f"raise GATE_BUFFER."

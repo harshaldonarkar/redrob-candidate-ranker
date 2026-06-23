@@ -18,7 +18,9 @@ team_members:
 # ============================================================================
 github_repo: "https://github.com/harshaldonarkar/redrob-candidate-ranker"  # private; grant organizer access at Stage 3
 
-sandbox_link: "TODO"   # REQUIRED — hosted env (HuggingFace Space / Colab / Replit / Docker) running rank.py on a <=100 sample
+# Self-contained Docker recipe in the repo README (spec 10.5 allows this in lieu of a
+# hosted sandbox). Dockerfile builds and runs unmodified; see README.md "Sandbox".
+sandbox_link: "https://github.com/harshaldonarkar/redrob-candidate-ranker#sandbox-self-contained-docker-recipe"
 
 reproduce_command: "python rank.py --candidates ./candidates.jsonl --out ./submission.csv"
 
