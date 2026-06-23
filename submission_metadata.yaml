@@ -1,15 +1,15 @@
 # Redrob Hackathon — Submission Metadata
 # Mirrors the portal metadata. Fill the TODO fields before submitting.
 
-team_name: "TODO"
+team_name: "Harshal Donarkar"
 
 primary_contact:
-  name: "TODO"
+  name: "Harshal Donarkar"
   email: "harshaldonarkar@gmail.com"
-  phone: "TODO"
+  phone: "TODO — your phone number"
 
 team_members:
-  - name: "TODO"
+  - name: "Harshal Donarkar"
     email: "harshaldonarkar@gmail.com"
     role: "ML Engineer"
 
@@ -26,11 +26,11 @@ reproduce_command: "python rank.py --candidates ./candidates.jsonl --out ./submi
 # Compute environment
 # ============================================================================
 compute:
-  platform: "TODO — e.g. MacBook Pro (Apple Silicon), 16GB RAM"
-  cpu_cores: 8
-  ram_gb: 16
-  python_version: "3.13"
-  os: "macOS"
+  platform: "MacBook Pro (Apple M4 Pro), 24GB RAM, 512GB SSD"
+  cpu_cores: 12          # M4 Pro: 8 performance + 4 efficiency (sysctl -n hw.ncpu)
+  ram_gb: 24
+  python_version: "3.13.5"
+  os: "macOS 26.5.1"
   uses_gpu_for_inference: false
   has_network_during_ranking: false
   pre_computation_required: false
@@ -49,8 +49,9 @@ ai_usage_summary: |
   sounding board for design choices. The graded substance — the career-history
   relevance scorer, role/AI-depth/experience/behavioral signals, the saturating
   normalization and weights, the hard-negative gates and their strengths, and the
-  honeypot detector — was designed, tuned against the real data, and decided by the
-  team. No candidate data was sent to any hosted LLM; the ranker makes no API calls.
+  honeypot detector — I designed and tuned against the real data myself, with Claude
+  as a sounding board on tradeoffs. No candidate data was sent to any hosted LLM; the
+  ranker makes no API calls.
 
 # ============================================================================
 # Approach summary
