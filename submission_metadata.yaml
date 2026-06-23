@@ -1,0 +1,78 @@
+# Redrob Hackathon — Submission Metadata
+# Mirrors the portal metadata. Fill the TODO fields before submitting.
+
+team_name: "TODO"
+
+primary_contact:
+  name: "TODO"
+  email: "harshaldonarkar@gmail.com"
+  phone: "TODO"
+
+team_members:
+  - name: "TODO"
+    email: "harshaldonarkar@gmail.com"
+    role: "ML Engineer"
+
+# ============================================================================
+# Code and reproducibility
+# ============================================================================
+github_repo: "https://github.com/harshaldonarkar/redrob-candidate-ranker"  # private; grant organizer access at Stage 3
+
+sandbox_link: "TODO"   # REQUIRED — hosted env (HuggingFace Space / Colab / Replit / Docker) running rank.py on a <=100 sample
+
+reproduce_command: "python rank.py --candidates ./candidates.jsonl --out ./submission.csv"
+
+# ============================================================================
+# Compute environment
+# ============================================================================
+compute:
+  platform: "TODO — e.g. MacBook Pro (Apple Silicon), 16GB RAM"
+  cpu_cores: 8
+  ram_gb: 16
+  python_version: "3.13"
+  os: "macOS"
+  uses_gpu_for_inference: false
+  has_network_during_ranking: false
+  pre_computation_required: false
+  pre_computation_time_minutes: 0
+
+# ============================================================================
+# AI tools declaration (transparency only — declared use is NOT penalized)
+# ============================================================================
+ai_tools_used:
+  - "Claude"
+
+ai_usage_summary: |
+  Used Claude (Claude Code) as a pair-programming and code-review assistant:
+  scaffolding the pipeline, the .gz loader, the deterministic data-derived REF_DATE,
+  the sort key, the gate-on-top structure, and the validator-safe CSV writer; and as a
+  sounding board for design choices. The graded substance — the career-history
+  relevance scorer, role/AI-depth/experience/behavioral signals, the saturating
+  normalization and weights, the hard-negative gates and their strengths, and the
+  honeypot detector — was designed, tuned against the real data, and decided by the
+  team. No candidate data was sent to any hosted LLM; the ranker makes no API calls.
+
+# ============================================================================
+# Approach summary
+# ============================================================================
+methodology_summary: |
+  Unsupervised, hand-encoded ranker (Python stdlib only, ~26s on 100K, CPU/no-network).
+  Five positive signals — career-history relevance (reads what each role actually did,
+  highest weight), role-relevance tier, corroborated AI-skill depth, experience band,
+  behavioral availability — normalized to [0,1] and blended additively. Career and AI
+  depth use a saturating x/(x+K) transform with K read off each feature's own
+  distribution. Four hard negatives (keyword-stuffer, services-only career, CV/speech-
+  primary, recent-LLM-only) apply as multiplicative gates outside the blend so strong
+  positives can't average them away. A high-precision honeypot detector runs as an
+  end-gate over the top ranks. Deterministic: time math anchored to a data-derived
+  REF_DATE, ties broken by candidate_id; two runs are byte-identical.
+
+# ============================================================================
+# Declarations
+# ============================================================================
+declarations:
+  read_submission_spec: true
+  code_is_original_work: true
+  no_collusion: true
+  honeypot_check_done: true
+  reproduction_tested: true

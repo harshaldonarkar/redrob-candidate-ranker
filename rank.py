@@ -624,7 +624,8 @@ def write_csv(rows: list[dict], out_path: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in", dest="inp", default="candidates.jsonl")
+    # --candidates is an alias for --in so the spec's canonical reproduce command works.
+    ap.add_argument("--in", "--candidates", dest="inp", default="candidates.jsonl")
     ap.add_argument("--out", dest="out", default="submission.csv")
     args = ap.parse_args()
 

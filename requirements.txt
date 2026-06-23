@@ -1,8 +1,6 @@
-# EDA environment for candidate.ipynb (Python 3.13).
-# Reproduce: python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-pandas==3.0.3
-numpy==2.4.6
-matplotlib==3.11.0
-
-# Notebook kernel (only needed to run candidate.ipynb, not the ranker itself).
-ipykernel==7.3.0
+# The ranker (rank.py) uses the Python 3 standard library ONLY — no third-party
+# dependencies. `pip install -r requirements.txt` is a no-op; the ranking step
+# runs on a clean Python 3.11+ interpreter with nothing installed.
+#
+# The EDA notebook (candidate.ipynb) is a separate, optional dev tool. Its
+# dependencies are pinned in requirements-eda.txt.

@@ -17,3 +17,10 @@ candidates.jsonl.gz
 # Generated submission
 submission.csv
 *.submission.csv
+
+# Organizer-provided bundle files — kept locally as reference, not part of this
+# repo (challenge docs, dataset sample, metadata template). Our deliverable is the
+# code + README + submission_metadata.yaml.
+*.docx
+sample_candidates.json
+submission_metadata_template.yaml
