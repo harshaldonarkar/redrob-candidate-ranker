@@ -102,11 +102,91 @@ The **reasoning column** is generated per-candidate from the matched features (r
 years, the quoted relevant career line, endorsed skills, honest concerns) — deterministic,
 no LLM, every claim grounded in the candidate's record.
 
+## Validation and limitations
+
+There are no ground-truth relevance labels in the bundle, and the hidden score
+(NDCG@10 / NDCG@50 / MAP / P@10) is computed by the organizers after close. So
+ranking quality is **not measured** here. What follows is what was checked and what
+was not.
+
+**What was checked** (full 100K pool, `REF_DATE = 2026-05-27`):
+
+- **Format:** `validate_submission.py` passes on the output.
+- **Determinism:** repeated runs produce a byte-identical CSV (compared by SHA-256).
+- **Honeypot gate:** the impossibility checks flag 66 profiles in the pool. One of
+  them scores into the top 150 (rank 112 before gating) and is dropped; none are in
+  the final top 100.
+- **Hard-negative gates:** they fire on 22 (keyword-stuffer), 9,745 (services-only),
+  54 (CV/speech-primary) and 262 (recent-LLM-only) candidates. No gated candidate is
+  in the top 100: the best gated score is 0.117 against a rank-100 score of 0.731.
+- **Inspection:** the top of the ranking and the candidates caught by each gate were
+  read by hand in `candidate.ipynb` while the signals and thresholds were being set.
+
+- **Unit tests:** `python -m unittest test_rank -v` runs 10 standard-library tests on
+  synthetic candidates (keyword-stuffer gets the ×0.05 gate, services-only gets ×0.10,
+  honeypot checks fire, `-1` sentinels stay neutral, two runs are byte-identical).
+
+**Sensitivity of the top 100** (`python sensitivity.py`, full pool). Each weight is
+changed by ±20% with the others rescaled to sum to 1, and each gate is switched off,
+one at a time. The table counts how many of the baseline top 100 and top 10 survive.
+This measures stability, not accuracy.
+
+| Variant | Top 100 kept | Top 10 kept | Rank 1 unchanged |
+|---|---|---|---|
+| career weight −20% | 96/100 | 9/10 | yes |
+| career weight +20% | 98/100 | 10/10 | yes |
+| role weight −20% | 99/100 | 10/10 | yes |
+| role weight +20% | 99/100 | 10/10 | yes |
+| ai weight −20% | 97/100 | 9/10 | yes |
+| ai weight +20% | 97/100 | 10/10 | yes |
+| exp weight −20% | 99/100 | 9/10 | yes |
+| exp weight +20% | 99/100 | 10/10 | yes |
+| behavioral weight −20% | 100/100 | 10/10 | yes |
+| behavioral weight +20% | 98/100 | 9/10 | yes |
+| each hard-negative gate off (4 runs) | 100/100 | 10/10 | yes |
+| all four gates off | 100/100 | 10/10 | yes |
+| honeypot gate off | 100/100 | 10/10 | yes |
+
+Two readings. The top 100 is stable to the weights: a ±20% change to any one weight
+moves at most 4 of 100 candidates and never changes rank 1. And the gates are **not
+what decides the top 100 on this pool**: switching any or all of them off leaves it
+unchanged. The positive signals already keep those candidates out (a keyword-stuffer
+has an off-target title and no career evidence; services roles count at 0.3× inside
+the career signal). The gates act lower in the ranking and as a safeguard, so this
+run gives no evidence that they improve the submitted list.
+
+**What could not be measured:**
+
+- NDCG, MAP and precision, or any other accuracy figure, since there are no labels.
+- Honeypot recall. The organizers describe about 80 honeypots and the detector flags
+  66, so some are probably missed. The checks were built for precision, and what
+  matters for the submission is that none reach the top 100.
+- False-positive rates of the gates beyond manual spot checks. The services-only gate
+  is the coarsest: it covers 9.7% of the pool on company name and industry alone.
+
+**Limitations:**
+
+- **Hand-tuned weights.** The five weights, the gate multipliers and the saturation
+  constants were set by judgment and inspection, not fitted. The sensitivity check
+  above covers the weights and gate on/off only, not the saturation constants, the
+  gate thresholds or the term lists.
+- **Keyword and regex matching.** Career relevance comes from fixed term lists. Work
+  described in other words is under-credited, and a description that uses the right
+  terms without the substance is over-credited. There are no embeddings or semantic
+  matching.
+- **English only.** The patterns assume English titles and descriptions.
+- **No learned component.** Nothing is trained, so the ranker cannot pick up signals
+  that were not written into it by hand.
+- **Tuned to one job description.** The term lists, title tiers and the services-firm
+  list are specific to this role and this candidate pool.
+
 ## Files
 
 | File | What |
 |---|---|
 | `rank.py` | the ranker (stdlib only) |
+| `sensitivity.py` | weight ±20% and gate-off sweep over the top 100 (stdlib only) |
+| `test_rank.py` | unit tests on synthetic candidates (stdlib `unittest`) |
 | `validate_submission.py` | format validator (organizer-provided) |
 | `candidate.ipynb` | EDA notebook (distributions, sentinel handling, honeypot design) |
 | `candidate_schema.json` | candidate record schema (reference) |

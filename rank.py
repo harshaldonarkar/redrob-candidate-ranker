@@ -2,18 +2,33 @@
 """
 rank.py — Redrob "Intelligent Candidate Discovery" ranker.
 
-Baseline milestone: load candidates -> score -> honeypot gate -> top 100 ->
-write a validator-clean CSV. The score here is a THROWAWAY placeholder so the
-pipeline runs end to end. Replace `score_candidate` with the real JD-grounded
-model; that is the graded work and it stays yours.
+Ranks the top 100 candidates for the Senior AI Engineer (Founding Team) job
+description. Unsupervised and hand-encoded: there are no relevance labels, so
+the score is an explicit encoding of the JD rather than a trained model.
 
-Compute contract (hard): CPU-only, no network, < 5 min, < 16 GB.
+Score = weighted blend of five signals, each normalized to [0,1]:
+    0.40 career-history relevance   (what each role's description says was built)
+    0.22 role-relevance tier        (current_title: core / adjacent / off-target)
+    0.16 corroborated AI-skill depth (skills both endorsed and used)
+    0.14 experience band            (flat across 5-9 years, soft falloff outside)
+    0.08 behavioral availability    (recency, recruiter response, open-to-work)
+
+multiplied by four hard-negative gates, which stack:
+    x0.05 keyword-stuffer   x0.10 services-only career
+    x0.05 CV/speech-primary x0.25 recent-LLM-only
+
+Pipeline: load -> score -> sort (score desc, candidate_id asc) -> honeypot gate
+over the top 150 (drops internally impossible profiles) -> top 100 -> reasoning
+-> validator-clean CSV.
+
+Compute contract (hard): CPU-only, no network, < 5 min, < 16 GB. Standard
+library only.
 Determinism (hard): same input -> byte-identical CSV. Everything time-based is
 anchored to REF_DATE (data-derived), never to "today".
 
 Usage:
-    python rank.py --in candidates.jsonl --out team_xxx.csv
-    python validate_submission.py team_xxx.csv
+    python rank.py --candidates candidates.jsonl --out submission.csv
+    python validate_submission.py submission.csv
 """
 
 from __future__ import annotations
@@ -396,43 +411,47 @@ def hard_negative_multiplier(c: dict, career_raw: float, ai_hits: int, trusted_a
 
 
 # --------------------------------------------------------------------------
-# Scoring  <-- THIS is the part you build. Everything below is plumbing.
+# Scoring
 # --------------------------------------------------------------------------
 def score_candidate(c: dict, ref_date: date) -> float:
     """
-    Return a relevance score (higher = better fit for the Redrob JD).
+    Return a relevance score in [0,1] (higher = better fit for the Redrob JD).
 
-    Build this out per the JD model. Suggested structure, in rough weight order:
+    score = positive * hard_negative_multiplier
 
-      1. HARD NEGATIVES — multiplicative gate in hard_negative_multiplier():
-         [GATED]   non-technical current_title + dense AI skills (is_stuffer, x0.05)
-         [GATED]   services-only career across the WHOLE career_history (x0.10)
-         [GATED]   CV/speech/robotics primary with no NLP/IR anywhere (x0.05)
-         [GATED]   recent-LLM-only (<12mo LLM tags, no classic ML) (x0.25, JD hedges)
-         [OMITTED] pure-research-only: 0 candidates in this pool once tightened to
-                   academic-lab markers; loose version false-positived product roles
+    positive is a weighted sum of five signals, each in [0,1] (WEIGHTS sum to 1):
 
-      2. CORE FIT (heaviest positive weight):
-         - retrieval / vector-search / ranking evidence IN career_history
-           descriptions (production), not just skill tags
-         - eval rigor (NDCG/MRR/MAP/A-B) in descriptions
-         - role-relevance tier of titles (core ML/AI/Applied Sci/Recsys/Search/NLP
-           > Data Scientist/Data Eng/SWE-with-ML > off-target)
-         - ai_depth / trusted_ai (endorsed AND used), from your notebook
+      0.40  career      score_career_history -> normalize_career, x/(x+13).
+                        Distinct IR/recsys/ranking/embedding/NLP concepts in each
+                        role's title + description, scaled by build-vs-mention
+                        language, eval-rigor terms, tenure and recency. Roles at
+                        services firms count at 0.3x.
+      0.22  role        role_tier_score: current_title -> core 1.0 / adjacent
+                        0.55 / off-target 0.10 (CV/speech/robotics titles are
+                        off-target).
+      0.16  ai          ai_features -> normalize_ai, x/(x+7). Proficiency x years
+                        over AI skills that are both endorsed (>=1) and used
+                        (>=6 months); unsupported skill tags add nothing.
+      0.14  exp         exp_band: 1.0 flat across 5-9 years, linear falloff
+                        outside. Not a hard cut.
+      0.08  behavioral  behavioral_score: recency of last activity, recruiter
+                        response rate, open-to-work. Missing or -1 values are
+                        treated as neutral, never as 0.
 
-      3. EXPERIENCE BAND: soft peak at 6-8 yrs, fine across 5-9, flexible beyond
-         if core signals are strong. Do not hard-cut.
+    hard_negative_multiplier is the product of whichever gates fire:
 
-      4. PRODUCT-COMPANY: reward applied-ML time at product companies; penalize
-         services. (The bullseye: 4-5 yrs applied ML at product cos.)
+      x0.05  keyword-stuffer    non-technical title, >=5 AI skill tags, <=1
+                                corroborated, no career evidence
+      x0.10  services-only      every role is at a services firm / IT Services
+      x0.05  CV/speech-primary  vision/speech terms and no IR/NLP evidence anywhere
+      x0.25  recent-LLM-only    technical title, only <12-month LLM-era skills,
+                                no classic-ML skill
 
-      5. NICE-TO-HAVE BOOSTS (small): LoRA/QLoRA/PEFT, learning-to-rank,
-         HR-tech/marketplace, distributed systems, OSS/papers (external validation).
+    The gates multiply the blend rather than joining it, so strong positives
+    cannot average a hard negative away. The honeypot check is separate: it runs
+    in rank() on the sorted top of the list (see honeypot_reasons).
 
-      6. BEHAVIORAL (weak tiebreakers): down-weight inactive (days_since_active)
-         + low recruiter_response_rate. -1 sentinels -> NEUTRAL, never 0.
-
-    Keep it deterministic and cheap (no per-candidate model calls).
+    Deterministic and cheap: regex and arithmetic only, no model calls.
     """
     profile = c.get("profile") or {}
 
@@ -455,10 +474,10 @@ def score_candidate(c: dict, ref_date: date) -> float:
 
 
 # --------------------------------------------------------------------------
-# Honeypot gate  (paste your notebook's honeypot_reasons here)
+# Honeypot gate
 # --------------------------------------------------------------------------
 def honeypot_reasons(c: dict, ref_date: date) -> list[str]:
-    """High-precision impossibility checks (notebook §6). Empty list = passes the
+    """High-precision impossibility checks (candidate.ipynb §6). Empty list = passes the
     gate. These are 'this cannot be true', not weak-candidate signals."""
     reasons = []
     p = c.get("profile") or {}

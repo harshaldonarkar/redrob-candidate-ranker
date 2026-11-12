@@ -1,5 +1,5 @@
 # Redrob Hackathon — Submission Metadata
-# Mirrors the portal metadata. Fill the TODO fields before submitting.
+# Mirrors the portal metadata.
 
 team_name: "Harshal Donarkar"
 
@@ -16,7 +16,7 @@ team_members:
 # ============================================================================
 # Code and reproducibility
 # ============================================================================
-github_repo: "https://github.com/harshaldonarkar/redrob-candidate-ranker"  # private; grant organizer access at Stage 3
+github_repo: "https://github.com/harshaldonarkar/redrob-candidate-ranker"  # public
 
 # Self-contained Docker recipe in the repo README (spec 10.5 allows this in lieu of a
 # hosted sandbox). Dockerfile builds and runs unmodified; see README.md "Sandbox".
